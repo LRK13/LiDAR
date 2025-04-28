@@ -1,124 +1,59 @@
-from fastapi import FastAPI, File, UploadFile, Form
-from fastapi.responses import JSONResponse, FileResponse
-import shutil
-import subprocess
+import streamlit as st
+import pdal
 import os
-import json
-from uuid import uuid4
+import json  # Importing json module
+from io import BytesIO
 
-app = FastAPI()
+# Function to classify the ground using PDAL
+def classify_ground(input_file_path, output_file_path):
+    pipeline_json = {
+        "pipeline": [
+            input_file_path,
+            {
+                "type": "filters.smrf",  # SMRF (Simple Morphological Filter) to classify ground
+                "window": 16.0,  # Adjust window size if necessary
+                "slope": 0.2,    # Adjust slope if necessary
+                "threshold": 0.45,  # Adjust threshold for ground classification
+            },
+            output_file_path
+        ]
+    }
 
-UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "classified_outputs"
+    pipeline = pdal.Pipeline(json.dumps(pipeline_json))  # Using json.dumps
+    pipeline.execute()
 
-# Ensure necessary directories exist
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Streamlit interface for uploading files
+def main():
+    st.title("LiDAR Ground Classification with PDAL")
 
-# Root route to verify API is running
-@app.get("/")
-def read_root():
-    return {"message": "PDAL classification API is running."}
+    # File uploader
+    uploaded_file = st.file_uploader("Upload LAS or LAZ file", type=["las", "laz"])
 
-@app.post("/classify_point_cloud/")
-async def classify_point_cloud(
-    file: UploadFile = File(...),
-    ground: bool = Form(True),
-    output_filename: str = Form(...)
-):
-    """
-    Classifies the point cloud to extract ground points (class 2) and saves the result.
+    if uploaded_file is not None:
+        # Save the uploaded file
+        input_file_path = os.path.join("uploads", uploaded_file.name)
+        os.makedirs("uploads", exist_ok=True)
+        with open(input_file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
 
-    Args:
-        file (UploadFile): The LAS/LAZ file to process.
-        ground (bool):  Whether to perform ground classification.
-        output_filename (str):  The desired filename for the output LAS file (e.g., "ground.las").
+        # Output file path
+        output_file_path = os.path.join("uploads", f"classified_{uploaded_file.name}")
 
-    Returns:
-        JSONResponse:  A message indicating success or an error message.
-    """
+        # Button to classify ground
+        if st.button("Classify Ground"):
+            # Classify the ground points using PDAL
+            classify_ground(input_file_path, output_file_path)
+            st.success("Ground classification complete!")
 
-    if not (file.filename.endswith(".las") or file.filename.endswith(".laz")):
-        return JSONResponse(content={"error": "Only LAS or LAZ files are supported."}, status_code=400)
-
-    try:
-        file_id = str(uuid4())
-        input_filename = f"{file_id}_{file.filename}"
-        input_path = os.path.join(UPLOAD_DIR, input_filename)
-
-        # Save uploaded file
-        with open(input_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        # Use provided output filename as-is
-        output_path = os.path.join(OUTPUT_DIR, output_filename)
-        if not output_filename.endswith(".las") and not output_filename.endswith(".laz"):
-            output_path += ".las"  # Ensure .las or .laz extension
-
-        filters = []
-        if ground:
-            filters.append({"type": "filters.smrf"})
-
-        pipeline = {
-            "pipeline": [
-                {"type": "readers.las", "filename": input_path},
-                *filters,
-                {"type": "writers.las", "filename": output_path}
-            ]
-        }
-
-        with open("pipeline.json", "w") as f:
-            json.dump(pipeline, f)
-
-        result = subprocess.run(
-            ["pdal", "pipeline", "pipeline.json"],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-
-        if result.returncode != 0:
-            return JSONResponse(
-                content={"error": f"PDAL Error: {e.stderr.strip()}"},
-                status_code=500
+            # Provide the classified file for download
+            with open(output_file_path, "rb") as f:
+                classified_file = BytesIO(f.read())
+            st.download_button(
+                label="Download Classified LAS/LAZ File",
+                data=classified_file,
+                file_name=f"classified_{uploaded_file.name}",
+                mime="application/octet-stream"
             )
 
-        download_url = f"/download/{output_filename}"
-
-        return {
-            "message": "Ground classification successful.",
-            "download_url": download_url
-        }
-
-    except subprocess.CalledProcessError as e:
-        return JSONResponse(
-            content={"error": f"PDAL Error: {e.stderr.strip()}"},
-            status_code=500
-        )
-    except Exception as e:
-        return JSONResponse(
-            content={"error": f"Unexpected error: {str(e)}"},
-            status_code=500
-        )
-    finally:
-        if os.path.exists("pipeline.json"):
-            os.remove("pipeline.json")
-        if os.path.exists(input_path):
-            os.remove(input_path)
-
-
-@app.get("/download/{filename}")
-async def download_file(filename: str):
-    """
-    Downloads the classified LAS/LAZ file.
-
-    Args:
-        filename (str): The name of the file to download.
-
-    Returns:
-        FileResponse: The classified LAS/LAZ file.
-    """
-    file_path = os.path.join(OUTPUT_DIR, filename)
-    if os.path.exists(file_path):
-        return FileResponse(path=file_path, filename=filename, media_type='application/octet-stream')
-    return JSONResponse(content={"error": "File not found."}, status_code=404)
+if __name__ == "__main__":
+    main()

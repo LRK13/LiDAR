@@ -1,7 +1,4 @@
-fastapi
-uvicorn[standard]
-python-multipart
-laspy
-numpy
+streamlit
+pdal
 matplotlib
-scipy
+numpy
